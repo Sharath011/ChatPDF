@@ -1,6 +1,8 @@
 fastapi
 uvicorn
-pymupdf
 langchain
 chromadb
+pypdf
+openai
+transformers
 sentence-transformers

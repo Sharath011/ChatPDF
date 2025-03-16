@@ -1,60 +1,68 @@
-from fastapi import FastAPI, UploadFile, File, Form
+# /backend/main.py
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import os
 import shutil
-import fitz  # PyMuPDF
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-# Directories
-UPLOAD_FOLDER = "uploaded_pdfs"
-VECTORSTORE_DIR = "chroma_db"
-
-# Ensure directories exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+from services import extract_text_from_pdf, get_vectorstore, query_pdf
 
 # Initialize FastAPI
 app = FastAPI()
 
-# Load Embedding Model
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Adjust as needed
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# Uploads folder
+UPLOAD_FOLDER = "backend/uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def extract_text_from_pdf(pdf_path):
-    """Extract text from a PDF file using PyMuPDF."""
-    doc = fitz.open(pdf_path)
-    text = "\n\n".join([page.get_text("text") for page in doc])
-    return text
-
-
-def store_pdf_embeddings(pdf_path):
-    """Extracts text from a PDF, splits it, and stores embeddings in ChromaDB."""
-    text = extract_text_from_pdf(pdf_path)
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    texts = text_splitter.create_documents([text])
-    
-    vectorstore = Chroma(persist_directory=VECTORSTORE_DIR, embedding_function=embeddings)
-    vectorstore.add_documents(texts)
-
+# Initialize vectorstore
+vectorstore = get_vectorstore()
 
 @app.post("/upload/")
 async def upload_pdf(file: UploadFile = File(...)):
-    """API endpoint to upload a PDF, process it, and store embeddings."""
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+    
     file_path = os.path.join(UPLOAD_FOLDER, file.filename)
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    store_pdf_embeddings(file_path)
-    
-    return {"filename": file.filename, "message": "PDF uploaded and processed"}
+    try:
+        # Save file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
+        # Extract text and store in vectorstore
+        texts = extract_text_from_pdf(file_path)
+        if not texts:
+            raise HTTPException(status_code=400, detail="No text extracted from PDF")
+
+        vectorstore.add_texts(texts)
+        vectorstore.persist()
+        return JSONResponse(content={"message": "PDF uploaded and processed successfully"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Define request body model
+class ChatRequest(BaseModel):
+    query: str
+    model: str
 
 @app.post("/chat/")
-async def chat_with_pdf(query: str = Form(...)):
-    """API endpoint to search the vector database for relevant content."""
-    vectorstore = Chroma(persist_directory=VECTORSTORE_DIR, embedding_function=embeddings)
-    docs = vectorstore.similarity_search(query, k=3)
-    response = "\n\n".join([doc.page_content for doc in docs])
-    
-    return {"response": response}
+async def chat_with_pdf(request: ChatRequest):
+    try:
+        response = query_pdf(vectorstore, request.query, request.model)
+        return JSONResponse(content={"response": response})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/models/")
+async def get_available_models():
+    """Returns the list of available LLMs"""
+    return JSONResponse(content={"models": ["openai", "mistral"]})

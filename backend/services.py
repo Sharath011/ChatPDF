@@ -1,48 +1,50 @@
+# /backend/services.py
 import os
-import PyPDF2
-import chromadb
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import Document
-from llama_cpp import Llama
+from langchain_community.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+from langchain_community.llms import OpenAI
+from langchain_ollama import OllamaLLM
 
-VECTOR_STORE_PATH = "embeddings"
-os.makedirs(VECTOR_STORE_PATH, exist_ok=True)
+# ChromaDB storage path
+CHROMA_DB_PATH = "backend/chroma_db"
 
-chroma_client = chromadb.PersistentClient(VECTOR_STORE_PATH)
-collection = chroma_client.get_or_create_collection(name="pdf_chunks")
+# Load embeddings
+embedding_function = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-def process_pdf(file_paths):
-    all_chunks = []
-    for file_path in file_paths:
-        with open(file_path, "rb") as file:
-            reader = PyPDF2.PdfReader(file)
-            text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+def extract_text_from_pdf(pdf_path):
+    """Extracts text from a given PDF file."""
+    try:
+        loader = PyPDFLoader(pdf_path)
+        documents = loader.load()
+        texts = [doc.page_content for doc in documents]
+        return texts
+    except Exception as e:
+        print(f"Error extracting text: {e}")
+        return []
 
-        doc_chunks = [text[i:i+500] for i in range(0, len(text), 500)]
-        docs = [Document(page_content=chunk, metadata={"source": file_path}) for chunk in doc_chunks]
+def get_vectorstore():
+    """Initializes or loads the Chroma vectorstore."""
+    return Chroma(persist_directory=CHROMA_DB_PATH, embedding_function=embedding_function)
 
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2").embed_documents([d.page_content for d in docs])
-        for doc, embedding in zip(docs, embeddings):
-            collection.add(documents=[doc.page_content], metadatas=[doc.metadata], embeddings=[embedding])
+def query_pdf(vectorstore, query, model):
+    """Runs the query on the stored PDF data using the selected LLM."""
+    retriever = vectorstore.as_retriever()
+    
+    try:
+        if model == "openai":
+            llm = OpenAI()
+        elif model == "mistral":
+            llm = OllamaLLM(model="mistral")
+        else:
+            return "Invalid model selection."
 
-        all_chunks.extend(docs)
-    return all_chunks
-
-def chat_with_llm(query, model):
-    results = collection.query(query_texts=[query], n_results=3)
-    context_chunks = [result["document"] for result in results["documents"]]
-    citations = [result["metadata"]["source"] for result in results["documents"]]
-
-    context = "\n".join(context_chunks)
-    final_prompt = f"Context:\n{context}\n\nUser: {query}\nAI:"
-
-    if model == "openai":
-        llm = ChatOpenAI()
-        response = llm.predict(final_prompt)
-    else:
-        llm = Llama(model_path=f"models/{model}.gguf", n_gpu_layers=30)
-        response = llm(final_prompt)
-
-    return response, citations
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm, retriever=retriever, return_source_documents=True
+        )
+        
+        response = qa_chain.invoke({"query": query})
+        return response["result"]  # Extract the answer
+    except Exception as e:
+        return f"Error in processing query: {e}"

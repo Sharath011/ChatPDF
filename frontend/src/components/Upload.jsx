@@ -1,34 +1,44 @@
-import React, { useState } from "react";
+import { useState } from "react";
+import axios from "axios";
 
 const Upload = ({ onUpload }) => {
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
 
   const handleFileChange = (event) => {
-    setSelectedFile(event.target.files[0]);
+    setFile(event.target.files[0]);
   };
 
   const handleUpload = async () => {
-    if (!selectedFile) return;
+    if (!file) return alert("Please select a PDF file.");
     
+    setUploading(true);
     const formData = new FormData();
-    formData.append("file", selectedFile);
+    formData.append("file", file);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/upload/", {
-        method: "POST",
-        body: formData,
+      await axios.post("http://127.0.0.1:8000/upload/", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
       });
-      const data = await response.json();
-      onUpload(data.filename);
+      alert("PDF uploaded successfully!");
+      onUpload(); // Notify parent
     } catch (error) {
-      console.error("Error uploading file:", error);
+      console.error("Upload failed:", error);
+      alert("Upload failed. Try again.");
     }
+    setUploading(false);
   };
 
   return (
-    <div>
-      <input type="file" onChange={handleFileChange} />
-      <button onClick={handleUpload}>Upload PDF</button>
+    <div className="p-4 border rounded-lg shadow-md bg-white">
+      <input type="file" accept="application/pdf" onChange={handleFileChange} className="mb-2" />
+      <button 
+        onClick={handleUpload} 
+        className="bg-blue-500 text-white px-4 py-2 rounded-lg"
+        disabled={uploading}
+      >
+        {uploading ? "Uploading..." : "Upload PDF"}
+      </button>
     </div>
   );
 };
